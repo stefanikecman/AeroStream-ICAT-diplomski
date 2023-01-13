@@ -204,7 +204,7 @@ class Agent:
                 #action = self.act(state[0]) #i ovde stavljam state[0], ne znam zasto
                 action = self.act(state) #original
 
-                print("Akcija je ", action)
+                #print("Akcija je ", action)
                 next_state, reward, done, image = self.env.step(action) #2. varijanta: dodajem image jer se vraca i 4. parametar
 
                 self.memorize(state, action, reward, next_state)
@@ -227,7 +227,7 @@ class Agent:
                         print('Cached Memory:', self.convert_size(torch.cuda.memory_reserved(0)))
                         print('Free Memory:', self.convert_size(torch.cuda.get_device_properties(0).total_memory - (torch.cuda.max_memory_allocated() + torch.cuda.max_memory_reserved())))
 
-                        # tensorboard --logdir=runs
+                        #tensorboard --logdir=runs
                         memory_usage_allocated = np.float64(round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
                         memory_usage_cached = np.float64(round(torch.cuda.memory_reserved(0) / 1024 ** 3, 1))
 

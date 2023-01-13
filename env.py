@@ -49,11 +49,12 @@ class DroneEnv(object):
         time.sleep(0.5)
         quad_state = self.client.getMultirotorState().kinematics_estimated.position
         quad_vel = self.client.getMultirotorState().kinematics_estimated.linear_velocity
-
+        #print(quad_state)
         if quad_state.z_val < - 7.3:
             self.client.moveToPositionAsync(quad_state.x_val, quad_state.y_val, -7, 1).join()
 
-        result, done = self.compute_reward(quad_state, quad_vel, collision)
+        #result, done = self.compute_reward(quad_state, quad_vel, collision)
+        result, done = self.compute_reward2(quad_state, quad_vel, collision)
         state, image = self.get_obs()
 
         return state, result, done, image #u originalu se ovaj image nije nigdje pohranjivao
@@ -96,7 +97,7 @@ class DroneEnv(object):
             image_array = Image.fromarray(image).resize((84, 84)).convert("L")
        
         obs = np.array(image_array)
-
+        
         return obs, image
 
     def get_distance(self, quad_state):
@@ -138,6 +139,33 @@ class DroneEnv(object):
             time.sleep(1)
 
         return reward, done
+    
+    def compute_reward2(self, quad_state, quad_vel, collision):
+        ksi = 1
+        FI_m = 20
+        eta = 4
+        R = 0.5 # Robot radius
+        rho_0 = 5
+        d = 1e9 
+        point= np.array(list((quad_state.x_val, quad_state.y_val, quad_state.z_val)))
+        D = self.get_distance(quad_state)
+        FI_g = 1./2 * ksi * D
+        #sad se traži najbliža prepreka (pikseli depth slike) i poredi sa d
+        obstacles, img = self.get_obs()
+        for i in range(len(obstacles)):
+            for j in range(len(obstacles[0])):
+                d = min(d, obstacles[i,j]) 
+
+        FI_o = 0 if d > rho_0 else FI_m * (1 - np.exp(-D**2/R**2)) * ((rho_0 - d) / rho_0) ** eta
+        reward= FI_o + FI_g
+        #kako da znam je li done?? - probat ću sa udaljenosti od cilja
+        done =0
+
+        if (self.get_distance==0):
+            done=1
+
+        return reward, done
+
 
 
     def interpret_action(self, action):
