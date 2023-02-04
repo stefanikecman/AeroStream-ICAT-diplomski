@@ -10,7 +10,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 from PIL import Image
 from setuptools import glob
-from env import DroneEnv
+from env2 import DroneEnv
 from torch.utils.tensorboard import SummaryWriter
 import time
 
@@ -23,17 +23,25 @@ writer = SummaryWriter()  #"runs/Mar03_14-55-58_DESKTOP-QGNSALL"
 class DQN(nn.Module):
     def __init__(self, in_channels=1, num_actions=4):
         super(DQN, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, 84, kernel_size=4, stride=4)
-        self.conv2 = nn.Conv2d(84, 42, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(42, 21, kernel_size=2, stride=2)
-        self.fc4 = nn.Linear(21*4*4, 168)
-        self.fc5 = nn.Linear(168, num_actions)
+        #self.conv1 = nn.Conv2d(in_channels, 84, kernel_size=4, stride=4)
+        #self.conv2 = nn.Conv2d(84, 42, kernel_size=4, stride=2)
+        #self.conv3 = nn.Conv2d(42, 21, kernel_size=2, stride=2)
+        #self.fc4 = nn.Linear(21*4*4, 168)
+        #self.fc5 = nn.Linear(168, num_actions)
+        input_features =3*10
+        self.fc1 = nn.Linear(input_features, 168)
+        self.fc2 = nn.Linear(168, 84)
+        self.fc3 = nn.Linear(84, 42)
+        self.fc4 = nn.Linear(42, 21)
+        self.fc5 = nn.Linear(21, num_actions)
 
     def forward(self, x):
-        x = F.relu(self.conv1(x))
-        x = F.relu(self.conv2(x))
-        x = F.relu(self.conv3(x))
+        #print(x.shape)
         x = x.view(x.size(0), -1)
+        #print(x.shape)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = F.relu(self.fc3(x))
         x = F.relu(self.fc4(x))
         return self.fc5(x)
 
@@ -101,8 +109,12 @@ class Agent:
                 open('saved_model_params.txt', 'w').close()
 
         obs, img = self.env.reset() 
+       
         tensor = self.transformToTensor(obs) 
-        writer.add_graph(self.dqn, tensor)
+       # print("tensor", tensor.shape)
+       
+        #writer.add_graph(self.dqn, tensor)
+
     def transformToTensor(self, img):
         if self.useGPU:
             tensor = torch.cuda.FloatTensor(img)
@@ -193,11 +205,13 @@ class Agent:
             score = 0
             while True:
                 
-                state = self.transformToTensor(state) 
+                state = self.transformToTensor(state) #original
 
-        
-                action = self.act(state) 
-                next_state, reward, done, image = self.env.step(action) 
+                
+                action = self.act(state) #original
+
+                #print("Akcija je ", action)
+                next_state, reward, done, image = self.env.step(action) #2. varijanta: dodajem image jer se vraca i 4. parametar
 
                 self.memorize(state, action, reward, next_state)
                 self.learn()

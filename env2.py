@@ -9,8 +9,9 @@ import csv
 import math
 import pprint
 import time
-
+import msgpack
 import torch
+import msgpackrpc
 from PIL import Image
 
 import numpy as np
@@ -28,12 +29,13 @@ class DroneEnv(object):
         self.last_dist = self.get_distance(self.client.getMultirotorState().kinematics_estimated.position)
         self.quad_offset = (0, 0, 0)
         self.useDepth = useDepth
+        self.n_first = 10
 
     def step(self, action):
         """Step"""
         #print("new step ------------------------------")
 
-        self.quad_offset = self.interpret_action(action) 
+        self.quad_offset = self.interpret_action(action) #ovo vraća offset quada, dobra se akcija prosljeđuje
 
         #print("quad_offset: ", self.quad_offset)
 
@@ -81,8 +83,9 @@ class DroneEnv(object):
             img1d = np.array(response.image_data_float, dtype=np.float)
             img1d = img1d * 3.5 + 30
             img1d[img1d > 255] = 255
-            image = np.reshape(img1d, (responses[0].height, responses[0].width)) 
-            image_array = Image.fromarray(image).resize((84, 84)).convert("L") 
+            image = np.reshape(img1d, (responses[0].height, responses[0].width)) #ovo je rgb slika koju mi ne koristimo
+            
+            image_array = Image.fromarray(image).convert("L") 
             
         else:
             # Get rgb image
@@ -92,12 +95,36 @@ class DroneEnv(object):
             response = responses[0]
             img1d = np.fromstring(response.image_data_uint8, dtype=np.uint8)
             image = img1d.reshape(response.height, response.width, 3) 
-            image_array = Image.fromarray(image).resize((84, 84)).convert("L")
-            
-        obs = np.array(image_array)
+            image_array = Image.fromarray(image).convert("L")
         
-        return obs, image
+        obs = np.array(image_array)
+        obs_dist_angles=self.get_angles(obs)
+        #print(dist_angles)
+        return obs_dist_angles, image
 
+
+    def get_angles (self, image_array):
+        n=self.n_first
+        f=self.client.simGetFocalLength("1")
+        height, width = image_array.shape 
+        n_points=height*width
+        dist_angles_array=np.zeros((n_points,3)) #forma [d,alpha,beta]
+        k=0
+        for i in range(height):
+            for j in range (width):
+                d=image_array[i,j]
+                alpha=math.atan((j-(width/2))/f)
+                beta=math.atan((i-(height/2))/f)
+                dist_angles_array[k,0]=d
+                dist_angles_array[k,1]=alpha
+                dist_angles_array[k,2]=beta
+                k+=1
+       
+        sorted_dist_angles_array = dist_angles_array[dist_angles_array[:,0].argsort()]
+        first_n_dist_angles=sorted_dist_angles_array[:n,:]
+
+        return first_n_dist_angles
+        
 
 
     def get_distance(self, quad_state):
@@ -147,9 +174,9 @@ class DroneEnv(object):
         FI_g = 1./2 * ksi * D
         
         obstacles, img = self.get_obs()
+
         for i in range(len(obstacles)):
-            for j in range(len(obstacles[0])):
-                d = min(d, obstacles[i,j]) 
+            d=min(d,obstacles[i,0])
 
         FI_o = 0 if d > rho_0 else FI_m * (1 - np.exp(-D**2/R**2)) * ((rho_0 - d) / rho_0) ** eta
         reward= FI_o + FI_g
@@ -158,7 +185,7 @@ class DroneEnv(object):
 
         if (self.get_distance==0):
             done=1
-            
+
         if (self.quad_offset[2]>100): #da sprijecimo odlazak u visinu u nedogled
              reward+=10e6
 
