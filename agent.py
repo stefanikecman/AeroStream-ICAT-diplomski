@@ -21,7 +21,7 @@ np.random.seed(0)
 writer = SummaryWriter()  #"runs/Mar03_14-55-58_DESKTOP-QGNSALL"
 
 class DQN(nn.Module):
-    def __init__(self, in_channels=1, num_actions=4):
+    def __init__(self, in_channels=1, num_actions=26):
         super(DQN, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, 84, kernel_size=4, stride=4)
         self.conv2 = nn.Conv2d(84, 42, kernel_size=4, stride=2)
@@ -39,7 +39,7 @@ class DQN(nn.Module):
 
 
 class Agent:
-    def __init__(self, useGPU=False, useDepth=False):
+    def __init__(self, useGPU=False, useDepth=False, goal=np.array([20, 20, -7])):
         self.useGPU = useGPU
         self.useDepth = useDepth
         self.eps_start = 0.9
@@ -48,10 +48,13 @@ class Agent:
         self.gamma = 0.8
         self.learning_rate = 0.001
         self.batch_size = 512
-        self.max_episodes = 10000
+        self.max_episodes = 500
         self.save_interval = 10
         self.episode = -1
         self.steps_done = 0
+        self.goal = goal
+        self.max_steps = 100
+        self.soft_reset_interval = 25
 
         if self.useGPU:
             self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -122,6 +125,16 @@ class Agent:
         s = round(size_bytes / p, 2)
         return "%s %s" % (s, size_name[i])
 
+    def act_test(self, state):
+        state = self.transformToTensor(state)
+        if self.useGPU:
+            action = np.argmax(self.dqn(state).cpu().data.squeeze().numpy()) 
+            return int(action)
+        else:
+            data = self.dqn(state).data
+            action = np.argmax(data.squeeze().numpy())
+            return int(action)
+
     def act(self, state):
         self.eps_threshold = self.eps_end + (self.eps_start - self.eps_end) * math.exp(
             -1.0 * self.steps_done / self.eps_decay
@@ -180,7 +193,6 @@ class Agent:
         self.optimizer.step()
 
     def train(self):
-
         score_history = []
         reward_history = []
         if self.episode == -1:
@@ -188,9 +200,14 @@ class Agent:
 
         for e in range(1, self.max_episodes + 1):
             start = time.time()
-            state, img = self.env.reset()
+            state, img = None, None
+            if e % self.soft_reset_interval == 0:
+                state, img = self.env.reset(soft_reset=True)
+            else:
+                state, img = self.env.reset()
             steps = 0
             score = 0
+            cnt = 0
             while True:
                 
                 state = self.transformToTensor(state) 
@@ -204,14 +221,17 @@ class Agent:
 
                 state = next_state
                 steps += 1
+                cnt += 1
                 score += reward
-                if done:
+                if cnt > self.max_steps:
                     print("----------------------------------------------------------------------------------------")
-                    print("episode:{0}, reward: {1}, mean reward: {2}, score: {3}, epsilon: {4}, total steps: {5}".format(self.episode, reward, round(score/steps, 2), score, self.eps_threshold, self.steps_done))
+                    print("episode:{0}, reward: {1}, mean reward: {2}, score: {3}, epsilon: {4}, total steps: {5}".format(self.episode, reward, \
+                        round(score/steps, 2), score, self.eps_threshold, cnt))
                     score_history.append(score)
                     reward_history.append(reward)
                     with open('log.txt', 'a') as file:
-                        file.write("episode:{0}, reward: {1}, mean reward: {2}, score: {3}, epsilon: {4}, total steps: {5}\n".format(self.episode, reward, round(score/steps, 2), score, self.eps_threshold, self.steps_done))
+                        file.write("episode:{0}, reward: {1}, mean reward: {2}, score: {3}, epsilon: {4}, total steps: {5}\n".format(self.episode, reward, \
+                            round(score/steps, 2), score, self.eps_threshold, cnt))
 
                     if self.useGPU:
                         print('Total Memory:', self.convert_size(torch.cuda.get_device_properties(0).total_memory))
@@ -245,9 +265,11 @@ class Agent:
                         torch.save(checkpoint, self.save_dir + '//EPISODE{}.pt'.format(self.episode))
 
                     self.episode += 1
+                    cnt = 0
                     end = time.time()
                     stopWatch = end - start
                     print("Episode is done, episode time: ", stopWatch)
-
+                    if done:
+                        state, img = self.env.reset()
                     break
         writer.close()

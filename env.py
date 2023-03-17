@@ -14,20 +14,25 @@ import torch
 from PIL import Image
 
 import numpy as np
+import random
 
 import airsim
 #import setup_path
 
-MOVEMENT_INTERVAL = 1
+SPEEDUP = 2
+MOVEMENT_INTERVAL = 0.5 / SPEEDUP
 
 class DroneEnv(object):
     """Drone environment class using AirSim python API"""
 
-    def __init__(self, useDepth=False):
+    def __init__(self, useDepth=False, goal=np.array([20, 20, -7])):
         self.client = airsim.MultirotorClient()
+        self.goal = goal 
         self.last_dist = self.get_distance(self.client.getMultirotorState().kinematics_estimated.position)
         self.quad_offset = (0, 0, 0)
         self.useDepth = useDepth
+        self.n_first = 10
+        self.goal_eps = 1e1
 
     def step(self, action):
         """Step"""
@@ -51,7 +56,7 @@ class DroneEnv(object):
         quad_vel = self.client.getMultirotorState().kinematics_estimated.linear_velocity
         
         if quad_state.z_val < - 7.3:
-            self.client.moveToPositionAsync(quad_state.x_val, quad_state.y_val, -7, 1).join()
+            self.client.moveToPositionAsync(quad_state.x_val, quad_state.y_val, -7, 1, timeout_sec=2).join()
 
         #result, done = self.compute_reward(quad_state, quad_vel, collision)
         result, done = self.compute_reward2(quad_state, quad_vel, collision)
@@ -59,14 +64,18 @@ class DroneEnv(object):
 
         return state, result, done, image 
 
-    def reset(self):
+    def reset(self, soft_reset=False):
         self.client.reset()
         self.last_dist = self.get_distance(self.client.getMultirotorState().kinematics_estimated.position)
         self.client.enableApiControl(True)
         self.client.armDisarm(True)
         self.client.takeoffAsync().join()
         quad_state = self.client.getMultirotorState().kinematics_estimated.position
-        self.client.moveToPositionAsync(quad_state.x_val, quad_state.y_val, -7, 1).join()
+        if soft_reset:
+            x_val, y_val = random.randint(0, self.goal[0]), random.randint(0, self.goal[1])
+            quad_state.x_val = x_val
+            quad_state.y_val = y_val
+        self.client.moveToPositionAsync(quad_state.x_val, quad_state.y_val, -7, 1, timeout_sec=2).join()
 
         obs, image = self.get_obs()
 
@@ -140,27 +149,31 @@ class DroneEnv(object):
         FI_m = 20
         eta = 4
         R = 0.5 # Robot radius
-        rho_0 = 5
+        rho_0 = 1
         d = 1e9 
-        point= np.array(list((quad_state.x_val, quad_state.y_val, quad_state.z_val)))
+        point = np.array(list((quad_state.x_val, quad_state.y_val, quad_state.z_val)))
         D = self.get_distance(quad_state)
         FI_g = 1./2 * ksi * D
         
         obstacles, img = self.get_obs()
-        for i in range(len(obstacles)):
-            for j in range(len(obstacles[0])):
-                d = min(d, obstacles[i,j]) 
+
+        for i in range(1, len(obstacles)):
+            d = min(d, obstacles[i,0])
 
         FI_o = 0 if d > rho_0 else FI_m * (1 - np.exp(-D**2/R**2)) * ((rho_0 - d) / rho_0) ** eta
-        reward= FI_o + FI_g
+        reward = -5 * FI_o - FI_g
         
-        done =0
+        done = False
 
-        if (self.get_distance==0):
-            done=1
-            
-        if (self.quad_offset[2]>100): #da sprijecimo odlazak u visinu u nedogled
-             reward+=10e6
+        if (self.get_distance(quad_state) < self.goal_eps):
+            done = True
+            reward += 1e2
+
+        if (self.quad_offset[2] < -100 or collision): #da sprijecimo odlazak u visinu u nedogled
+             reward -= 1e2
+        
+        if collision:
+            done = True
 
         return reward, done
 

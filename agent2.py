@@ -21,33 +21,36 @@ np.random.seed(0)
 writer = SummaryWriter()  #"runs/Mar03_14-55-58_DESKTOP-QGNSALL"
 
 class DQN(nn.Module):
-    def __init__(self, in_channels=1, num_actions=4):
+    def __init__(self, in_channels=1, num_actions=26, num_features = 10):
         super(DQN, self).__init__()
-        #self.conv1 = nn.Conv2d(in_channels, 84, kernel_size=4, stride=4)
-        #self.conv2 = nn.Conv2d(84, 42, kernel_size=4, stride=2)
-        #self.conv3 = nn.Conv2d(42, 21, kernel_size=2, stride=2)
-        #self.fc4 = nn.Linear(21*4*4, 168)
-        #self.fc5 = nn.Linear(168, num_actions)
-        input_features =3*10
-        self.fc1 = nn.Linear(input_features, 168)
-        self.fc2 = nn.Linear(168, 84)
-        self.fc3 = nn.Linear(84, 42)
-        self.fc4 = nn.Linear(42, 21)
-        self.fc5 = nn.Linear(21, num_actions)
+        input_features = 3 * (num_features + 1)
+
+        # VJEROVATNO NECE TREBATI VISE OD 3 LAYERA
+
+        self.fc1 = nn.Linear(input_features, 128)
+        self.dropout1 = nn.Dropout(p=0.6)
+        self.fc2 = nn.Linear(128, 128)
+        self.dropout2 = nn.Dropout(p=0.6)
+        self.fc3 = nn.Linear(128, 128)
+        self.dropout3 = nn.Dropout(p=0.6)
+        self.fc4 = nn.Linear(128, num_actions)
 
     def forward(self, x):
-        #print(x.shape)
         x = x.view(x.size(0), -1)
-        #print(x.shape)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        x = F.relu(self.fc3(x))
-        x = F.relu(self.fc4(x))
-        return self.fc5(x)
+        x = self.fc1(x)
+        x = self.dropout1(x)
+        x = F.relu(x)
+        x = self.fc2(x)
+        x = self.dropout2(x)
+        x = F.relu(x)
+        x = self.fc3(x)
+        x = self.dropout3(x)
+        x = F.relu(x)
+        return self.fc4(x)
 
 
 class Agent:
-    def __init__(self, useGPU=False, useDepth=False):
+    def __init__(self, useGPU=False, useDepth=False, goal=np.array([20, 20, -7])):
         self.useGPU = useGPU
         self.useDepth = useDepth
         self.eps_start = 0.9
@@ -56,10 +59,13 @@ class Agent:
         self.gamma = 0.8
         self.learning_rate = 0.001
         self.batch_size = 512
-        self.max_episodes = 10000
+        self.max_episodes = 500
         self.save_interval = 10
         self.episode = -1
         self.steps_done = 0
+        self.goal = goal
+        self.max_steps = 100
+        self.soft_reset_interval = 25
 
         if self.useGPU:
             self.device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -67,7 +73,7 @@ class Agent:
             self.device = torch.device('cpu')
 
         self.dqn = DQN()
-        self.env = DroneEnv(useDepth)
+        self.env = DroneEnv(useDepth, self.goal)
         self.memory = deque(maxlen=10000)
         self.optimizer = optim.Adam(self.dqn.parameters(), self.learning_rate)
 
@@ -79,15 +85,18 @@ class Agent:
         # LOGGING
         cwd = os.getcwd()
         self.save_dir = os.path.join(cwd, "saved models")
+        
         if not os.path.exists(self.save_dir):
             os.mkdir("saved models")
 
         if self.useGPU:
             self.dqn = self.dqn.to(self.device)  # to use GPU
 
+        print(self.save_dir)
         # model backup
-        files = glob.glob(self.save_dir + '\\*.pt')
+        files = glob.glob(self.save_dir + '/*.pt')
         if len(files) > 0:
+            print("Using {0}".format(files[-1]))
             files.sort(key=os.path.getmtime)
             file = files[-1]
             checkpoint = torch.load(file)
@@ -133,6 +142,17 @@ class Agent:
         p = math.pow(1024, i)
         s = round(size_bytes / p, 2)
         return "%s %s" % (s, size_name[i])
+
+    def act_test(self, state):
+        state = self.transformToTensor(state)
+        if self.useGPU:
+            action = np.argmax(self.dqn(state).cpu().data.squeeze().numpy()) 
+            return int(action)
+        else:
+            data = self.dqn(state).data
+            action = np.argmax(data.squeeze().numpy())
+            return int(action)
+       
 
     def act(self, state):
         self.eps_threshold = self.eps_end + (self.eps_start - self.eps_end) * math.exp(
@@ -192,7 +212,6 @@ class Agent:
         self.optimizer.step()
 
     def train(self):
-
         score_history = []
         reward_history = []
         if self.episode == -1:
@@ -200,9 +219,14 @@ class Agent:
 
         for e in range(1, self.max_episodes + 1):
             start = time.time()
-            state, img = self.env.reset()
+            state, img = None, None
+            if e % self.soft_reset_interval == 0:
+                state, img = self.env.reset(soft_reset=True)
+            else:
+                state, img = self.env.reset()
             steps = 0
             score = 0
+            cnt = 0
             while True:
                 
                 state = self.transformToTensor(state) #original
@@ -218,20 +242,24 @@ class Agent:
 
                 state = next_state
                 steps += 1
+                cnt += 1
                 score += reward
-                if done:
+                if cnt > self.max_steps:
                     print("----------------------------------------------------------------------------------------")
-                    print("episode:{0}, reward: {1}, mean reward: {2}, score: {3}, epsilon: {4}, total steps: {5}".format(self.episode, reward, round(score/steps, 2), score, self.eps_threshold, self.steps_done))
+                    print("episode:{0}, reward: {1}, mean reward: {2}, score: {3}, epsilon: {4}, total steps: {5}".format(self.episode, reward, \
+                        round(score/steps, 2), score, self.eps_threshold, cnt))
                     score_history.append(score)
                     reward_history.append(reward)
                     with open('log.txt', 'a') as file:
-                        file.write("episode:{0}, reward: {1}, mean reward: {2}, score: {3}, epsilon: {4}, total steps: {5}\n".format(self.episode, reward, round(score/steps, 2), score, self.eps_threshold, self.steps_done))
+                        file.write("episode:{0}, reward: {1}, mean reward: {2}, score: {3}, epsilon: {4}, total steps: {5}\n".format(self.episode, reward, \
+                            round(score/steps, 2), score, self.eps_threshold, cnt))
 
                     if self.useGPU:
                         print('Total Memory:', self.convert_size(torch.cuda.get_device_properties(0).total_memory))
                         print('Allocated Memory:', self.convert_size(torch.cuda.memory_allocated(0)))
                         print('Cached Memory:', self.convert_size(torch.cuda.memory_reserved(0)))
-                        print('Free Memory:', self.convert_size(torch.cuda.get_device_properties(0).total_memory - (torch.cuda.max_memory_allocated() + torch.cuda.max_memory_reserved())))
+                        print('Free Memory:', self.convert_size(torch.cuda.get_device_properties(0).total_memory - \
+                            (torch.cuda.max_memory_allocated() + torch.cuda.max_memory_reserved())))
 
                         #tensorboard --logdir=runs
                         memory_usage_allocated = np.float64(round(torch.cuda.memory_allocated(0) / 1024 ** 3, 1))
@@ -259,9 +287,11 @@ class Agent:
                         torch.save(checkpoint, self.save_dir + '//EPISODE{}.pt'.format(self.episode))
 
                     self.episode += 1
+                    cnt = 0
                     end = time.time()
                     stopWatch = end - start
                     print("Episode is done, episode time: ", stopWatch)
-
+                    if done:
+                        state, img = self.env.reset()
                     break
         writer.close()
